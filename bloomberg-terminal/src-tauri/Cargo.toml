@@ -1,0 +1,18 @@
+[package]
+name = "terminal"
+version = "0.1.0"
+description = "Bloomberg-like Financial Terminal"
+authors = ["Terminal Team"]
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "1.5", features = [] }
+
+[dependencies]
+tauri = { version = "1.6", features = ["shell-open", "path-all", "http-all", "fs-read-file", "fs-write-file", "fs-create-dir"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
