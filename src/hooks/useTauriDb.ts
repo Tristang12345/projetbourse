@@ -6,7 +6,7 @@
  * ============================================================
  */
 
-import { useEffect, useCallback } from "react";
+import React, { useEffect, useCallback, useRef } from "react";
 import { useTerminalStore } from "../store/useTerminalStore";
 import type { Position } from "../services/types";
 
@@ -38,28 +38,66 @@ const invoke = async <T>(cmd: string, args?: Record<string, unknown>): Promise<T
 export const usePersistPositions = () => {
   const { positions, addPosition } = useTerminalStore();
 
-  // Initial load from DB
+  // ── Hydration depuis SQLite au démarrage ──────────────────────────────
+  // `init_database` est la source de vérité : il initialise le schéma ET
+  // retourne toutes les positions persistées. On écrase le Store Zustand
+  // avec ces données (SQLite prime sur le cache localStorage de Zustand).
   useEffect(() => {
-    const loadFromDb = async () => {
-      const dbPositions = await invoke<any[]>("get_positions");
-      if (!dbPositions?.length) return;
-      // Only seed if Zustand has no persisted data
-      const storeHas = useTerminalStore.getState().positions.length > 0;
-      if (storeHas) return;
-      dbPositions.forEach((p) => addPosition({
-        ticker:   p.ticker,
-        name:     p.name,
-        sector:   p.sector,
-        quantity: p.quantity,
-        avgCost:  p.avg_cost,
-      }));
-    };
-    loadFromDb();
-  }, []);
+    const hydrateFromDb = async () => {
+      // Appel init_database (crée le schéma si absent + retourne les positions)
+      const dbPositions = await invoke<any[]>("init_database", {});
 
-  // Persist changes
+      if (dbPositions?.length) {
+        // SQLite est la source de vérité : remplace l'état Zustand.
+        useTerminalStore.setState({
+          positions: dbPositions.map((p) => ({
+            id:       p.id,
+            ticker:   p.ticker,
+            name:     p.name,
+            sector:   p.sector,
+            quantity: p.quantity,
+            avgCost:  p.avg_cost,
+            addedAt:  p.added_at ?? Date.now(),
+          })),
+        });
+      } else {
+        // DB vide (premier lancement) : synchroniser depuis Zustand vers SQLite.
+        // Si Zustand a déjà des positions (via onRehydrateStorage), on les persiste.
+        const { positions } = useTerminalStore.getState();
+        for (const pos of positions) {
+          await invoke("save_position", {
+            position: {
+              id:       pos.id,
+              ticker:   pos.ticker,
+              name:     pos.name,
+              sector:   pos.sector,
+              quantity: pos.quantity,
+              avg_cost: pos.avgCost,
+              added_at: pos.addedAt,
+            },
+          });
+        }
+      }
+    };
+    hydrateFromDb();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // IDs précédemment connus — permet de détecter les suppressions
+  const prevIdsRef = useRef<Set<string>>(new Set());
+
+  // Persist changes: upsert positions ajoutées/modifiées + delete positions supprimées
   useEffect(() => {
-    const persistAll = async () => {
+    const syncPositions = async () => {
+      const currentIds = new Set(positions.map((p) => p.id));
+
+      // ── Suppressions : IDs qui étaient là avant et ne sont plus là ────────
+      for (const oldId of prevIdsRef.current) {
+        if (!currentIds.has(oldId)) {
+          await invoke("delete_position", { id: oldId });
+        }
+      }
+
+      // ── Upserts : toutes les positions actuelles ───────────────────────────
       for (const pos of positions) {
         await invoke("save_position", {
           position: {
@@ -73,8 +111,10 @@ export const usePersistPositions = () => {
           },
         });
       }
+
+      prevIdsRef.current = currentIds;
     };
-    persistAll();
+    syncPositions();
   }, [positions]);
 };
 

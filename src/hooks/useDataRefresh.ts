@@ -6,7 +6,7 @@
  * ============================================================
  */
 
-import { useEffect, useCallback, useRef } from "react";
+import { useEffect, useCallback, useState } from "react";
 import { useTerminalStore } from "../store/useTerminalStore";
 import * as Orchestrator from "../services/dataOrchestrator";
 import { REFRESH_INTERVALS } from "../utils/throttle";
@@ -50,20 +50,20 @@ export const useNewsRefresh = () => {
   }, [refresh]);
 };
 
-/** Refresh macro dashboard */
-export const useMacroRefresh = () => {
+/** Refresh macro dashboard — accepte une date optionnelle pour le calendrier */
+export const useMacroRefresh = (calendarDate?: Date) => {
   const { setMacroData, setEconomicEvents, setLoading } = useTerminalStore();
 
   const refresh = useCallback(async () => {
     setLoading("macro", true);
     const [macro, calendar] = await Promise.allSettled([
       Orchestrator.getMacroData(),
-      Orchestrator.getEconomicCalendar(),
+      Orchestrator.getEconomicCalendar(calendarDate),
     ]);
     if (macro.status === "fulfilled")     setMacroData(macro.value);
     if (calendar.status === "fulfilled")  setEconomicEvents(calendar.value);
     setLoading("macro", false);
-  }, []);
+  }, [calendarDate?.toDateString()]);  // re-fetch quand la date change
 
   useEffect(() => {
     refresh();
@@ -72,41 +72,52 @@ export const useMacroRefresh = () => {
   }, [refresh]);
 };
 
-/** Refresh market overview */
-export const useMarketRefresh = () => {
+/** Refresh market overview for the given region (default US) */
+export const useMarketRefresh = (region: import("../services/dataOrchestrator").MarketRegion = "US") => {
   const { setQuotes, setLoading } = useTerminalStore();
 
   const refresh = useCallback(async () => {
     setLoading("market", true);
-    const quotes = await Orchestrator.getMarketOverview();
+    const quotes = await Orchestrator.getMarketOverview(region);
     setQuotes(quotes);
     setLoading("market", false);
-  }, []);
+  }, [region]);
 
   useEffect(() => {
     refresh();
     const id = setInterval(refresh, REFRESH_INTERVALS.MARKET);
     return () => clearInterval(id);
   }, [refresh]);
+
+  return { refresh };
 };
 
-/** Run screener */
+/** Run screener with live progress */
 export const useScreenerRefresh = (universe: string[]) => {
   const { setScreenerSignals, setLoading } = useTerminalStore();
+  const [progress, setProgress] = useState({ completed: 0, total: 0, current: "" });
 
   const refresh = useCallback(async () => {
     if (!universe.length) return;
     setLoading("screener", true);
-    const signals = await Orchestrator.runScreener(universe);
+    setProgress({ completed: 0, total: universe.length, current: "" });
+
+    const signals = await Orchestrator.runScreener(
+      universe,
+      (completed, total, current) =>
+        setProgress({ completed, total, current }),
+    );
+
     setScreenerSignals(signals);
     setLoading("screener", false);
+    setProgress((p) => ({ ...p, completed: p.total }));
   }, [universe.join(",")]);
 
   useEffect(() => {
-    refresh();
+    refresh();                                               // run immediately on mount
     const id = setInterval(refresh, REFRESH_INTERVALS.TECHNICAL);
     return () => clearInterval(id);
   }, [refresh]);
 
-  return { refresh };
+  return { refresh, progress };
 };

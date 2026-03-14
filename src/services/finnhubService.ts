@@ -77,6 +77,9 @@ const normalizeQuote = (
   avgVolume30d:  0,
   marketCap:     profile.marketCapitalization * 1_000_000,
   sector:        profile.finnhubIndustry,
+  currency:      "USD",          // Finnhub free tier is US-only
+  exchange:      "NYSE",         // enriched from profile if needed
+  country:       "US",
   timestamp:     raw.t ? raw.t * 1000 : Date.now(),
   source:        "finnhub",
 });

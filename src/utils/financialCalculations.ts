@@ -214,3 +214,28 @@ export const rsiColorClass = (rsi: number | null): string => {
   if (rsi >= 70)   return "text-down";
   return "text-terminal-text";
 };
+
+/** Format price with correct currency symbol (€ for EUR, £ for GBP, etc.) */
+export const formatPrice = (
+  value:    number,
+  currency: "USD" | "EUR" | "GBP" | "JPY" | "CHF" = "USD",
+  decimals?: number,
+): string => {
+  const d = decimals ?? (value < 10 ? 3 : value < 100 ? 2 : 0);
+  const formatted = value.toFixed(d);
+  switch (currency) {
+    case "EUR": return `${formatted} €`;
+    case "GBP": return `£${formatted}`;
+    case "JPY": return `¥${value.toFixed(0)}`;
+    case "CHF": return `Fr ${formatted}`;
+    default:    return `$${formatted}`;
+  }
+};
+
+/** Currency symbol only */
+export const currencySymbol = (currency: "USD" | "EUR" | "GBP" | "JPY" | "CHF" = "USD"): string => {
+  const symbols: Record<string, string> = {
+    USD: "$", EUR: "€", GBP: "£", JPY: "¥", CHF: "Fr",
+  };
+  return symbols[currency] ?? "$";
+};

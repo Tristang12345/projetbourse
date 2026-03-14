@@ -7,8 +7,8 @@
  */
 
 import React, { useState } from "react";
-import { Activity, Calendar, Globe2, ChevronUp, ChevronDown } from "lucide-react";
-import { format, isToday, isTomorrow, isPast } from "date-fns";
+import { Activity, Calendar, Globe2, ChevronUp, ChevronDown, ChevronLeft, ChevronRight, RotateCcw } from "lucide-react";
+import { format, isToday, isTomorrow, isPast, addDays, startOfDay, endOfDay, isSameDay, isWithinInterval } from "date-fns";
 import { useTerminalStore } from "../store/useTerminalStore";
 import { useMacroRefresh } from "../hooks/useDataRefresh";
 import { colorClass, formatPercent } from "../utils/financialCalculations";
@@ -142,7 +142,22 @@ const CalendarRow: React.FC<{
 // ─── Main Screen ──────────────────────────────────────────────
 
 export const MacroCalendar: React.FC = () => {
-  useMacroRefresh();
+  // ── Gestion de la plage de dates ───────────────────────────────────────────
+  // rangeStart = null → mode live (calendrier centré sur aujourd'hui)
+  // rangeStart seul = date unique sélectionnée (en cours de sélection)
+  // rangeStart + rangeEnd = plage complète
+  const [rangeStart, setRangeStart] = useState<Date | null>(null);
+  const [rangeEnd,   setRangeEnd]   = useState<Date | null>(null);
+  const [selecting,  setSelecting]  = useState(false);  // 1er clic en cours
+
+  // La date passée à useMacroRefresh = milieu de la plage (ou date unique)
+  const anchorDate = rangeStart
+    ? (rangeEnd
+        ? new Date((rangeStart.getTime() + rangeEnd.getTime()) / 2)
+        : rangeStart)
+    : undefined;
+
+  useMacroRefresh(anchorDate);
 
   const { macroData, economicEvents, isLoading } = useTerminalStore();
   const [impFilter, setImpFilter] = useState<EventImportance | "ALL">("ALL");
@@ -150,12 +165,138 @@ export const MacroCalendar: React.FC = () => {
 
   const macro = macroData;
 
+  const isLive = rangeStart === null;
+
+  const resetLive = () => {
+    setRangeStart(null);
+    setRangeEnd(null);
+    setSelecting(false);
+  };
+
+  // Clic sur une date dans le mini-calendrier
+  const handleDateClick = (d: Date) => {
+    if (!selecting || !rangeStart) {
+      // Premier clic: début de plage
+      setRangeStart(startOfDay(d));
+      setRangeEnd(null);
+      setSelecting(true);
+    } else {
+      // Deuxième clic: fin de plage
+      const start = d < rangeStart ? startOfDay(d) : rangeStart;
+      const end   = d < rangeStart ? rangeEnd ?? rangeStart : startOfDay(d);
+      setRangeStart(start);
+      setRangeEnd(d < rangeStart ? rangeStart : startOfDay(d));
+      setSelecting(false);
+    }
+  };
+
+  // Navigation mois
+  const [displayMonth, setDisplayMonth] = useState(new Date());
+  const shiftMonth = (delta: number) =>
+    setDisplayMonth((p) => new Date(p.getFullYear(), p.getMonth() + delta, 1));
+
+  // Filtrage par plage de dates + autres filtres
   const filteredEvents = economicEvents
+    .filter((e) => {
+      if (!rangeStart) return true;
+      const dt = new Date(e.datetime);
+      if (rangeEnd) {
+        return isWithinInterval(dt, { start: startOfDay(rangeStart), end: endOfDay(rangeEnd) });
+      }
+      return isSameDay(dt, rangeStart);
+    })
     .filter((e) => impFilter === "ALL" || e.importance === impFilter)
     .filter((e) => countryFilter === "ALL" || e.country === countryFilter)
     .sort((a, b) => a.datetime - b.datetime);
 
   const countries = ["ALL", ...new Set(economicEvents.map((e) => e.country))];
+
+  // ── Mini calendrier ────────────────────────────────────────────────────────
+  const CalendarPicker: React.FC = () => {
+    const year  = displayMonth.getFullYear();
+    const month = displayMonth.getMonth();
+    const firstDay = new Date(year, month, 1).getDay(); // 0=Sun
+    const daysInMonth = new Date(year, month + 1, 0).getDate();
+    const offset = (firstDay + 6) % 7; // Mon-first
+
+    const isInRange = (d: Date) => {
+      if (!rangeStart || !rangeEnd) return false;
+      return isWithinInterval(d, { start: startOfDay(rangeStart), end: endOfDay(rangeEnd) });
+    };
+    const isStart = (d: Date) => rangeStart ? isSameDay(d, rangeStart) : false;
+    const isEnd   = (d: Date) => rangeEnd   ? isSameDay(d, rangeEnd)   : false;
+
+    return (
+      <div className="absolute top-full left-0 mt-1 z-50 bg-terminal-elevated border border-terminal-border rounded-lg shadow-panel p-3 w-60">
+        {/* Header mois */}
+        <div className="flex items-center justify-between mb-2">
+          <button onClick={() => shiftMonth(-1)} className="p-1 text-terminal-dim hover:text-terminal-text">
+            <ChevronLeft size={13} />
+          </button>
+          <span className="text-xs font-mono font-semibold text-terminal-text">
+            {format(displayMonth, "MMMM yyyy")}
+          </span>
+          <button onClick={() => shiftMonth(+1)} className="p-1 text-terminal-dim hover:text-terminal-text">
+            <ChevronRight size={13} />
+          </button>
+        </div>
+
+        {/* Jours de la semaine */}
+        <div className="grid grid-cols-7 mb-1">
+          {["L","M","M","J","V","S","D"].map((d, i) => (
+            <div key={i} className="text-center text-2xs font-mono text-terminal-dim/60">{d}</div>
+          ))}
+        </div>
+
+        {/* Grille de jours */}
+        <div className="grid grid-cols-7 gap-px">
+          {Array.from({ length: offset }).map((_, i) => <div key={`e${i}`} />)}
+          {Array.from({ length: daysInMonth }).map((_, i) => {
+            const d    = new Date(year, month, i + 1);
+            const inR  = isInRange(d);
+            const isS  = isStart(d);
+            const isE  = isEnd(d);
+            const isT  = isToday(d);
+            return (
+              <button
+                key={i}
+                onClick={() => handleDateClick(d)}
+                className={`text-center text-2xs font-mono py-1 rounded transition-colors
+                  ${isS || isE
+                    ? "bg-terminal-accent text-white font-bold"
+                    : inR
+                    ? "bg-terminal-accent/20 text-terminal-accent"
+                    : isT
+                    ? "border border-terminal-accent/50 text-terminal-accent"
+                    : "text-terminal-text hover:bg-terminal-border"
+                  }`}
+              >
+                {i + 1}
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Footer */}
+        <div className="flex items-center justify-between mt-2 pt-2 border-t border-terminal-border">
+          {rangeStart && (
+            <span className="text-2xs font-mono text-terminal-dim">
+              {format(rangeStart, "dd/MM")}
+              {rangeEnd ? ` → ${format(rangeEnd, "dd/MM")}` : (selecting ? " → …" : "")}
+            </span>
+          )}
+          <button
+            onClick={resetLive}
+            className="ml-auto text-2xs font-mono text-terminal-accent hover:text-white transition-colors"
+          >
+            Live
+          </button>
+        </div>
+      </div>
+    );
+  };
+
+  const [showPicker, setShowPicker] = useState(false);
 
   return (
     <div className="flex flex-col h-full overflow-y-auto">
@@ -238,9 +379,50 @@ export const MacroCalendar: React.FC = () => {
             ))}
           </div>
 
-          <span className="ml-auto text-2xs font-mono text-terminal-dim">
-            {filteredEvents.length} events
-          </span>
+          {/* ── Date Range Picker ── */}
+          <div className="ml-auto flex items-center gap-2 relative">
+            {!isLive && (
+              <button
+                onClick={resetLive}
+                className="flex items-center gap-1 text-2xs font-mono text-terminal-accent hover:text-white border border-terminal-accent/40 hover:border-terminal-accent rounded px-2 py-1 transition-colors"
+              >
+                <RotateCcw size={9} /> Live
+              </button>
+            )}
+
+            {/* Bouton calendrier — affiche la plage sélectionnée */}
+            <button
+              onClick={() => setShowPicker((p) => !p)}
+              className={`flex items-center gap-2 px-3 py-1 border rounded text-2xs font-mono transition-colors
+                ${showPicker
+                  ? "border-terminal-accent text-terminal-accent bg-terminal-accent/10"
+                  : "border-terminal-border text-terminal-dim hover:text-terminal-text hover:border-terminal-muted"
+                }`}
+            >
+              <Calendar size={11} />
+              {isLive
+                ? "Aujourd'hui"
+                : rangeEnd
+                  ? `${format(rangeStart!, "dd/MM")} → ${format(rangeEnd, "dd/MM")}`
+                  : format(rangeStart!, "dd/MM/yyyy")
+              }
+            </button>
+
+            {/* Mini calendrier popup */}
+            {showPicker && (
+              <>
+                <div
+                  className="fixed inset-0 z-40"
+                  onClick={() => setShowPicker(false)}
+                />
+                <CalendarPicker />
+              </>
+            )}
+
+            <span className="text-2xs font-mono text-terminal-dim">
+              {filteredEvents.length} evt
+            </span>
+          </div>
         </div>
 
         {/* Column Headers */}

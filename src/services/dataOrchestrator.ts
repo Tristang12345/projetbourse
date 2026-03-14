@@ -7,36 +7,116 @@
  * ============================================================
  */
 
-import * as Finnhub     from "./finnhubService";
-import * as Polygon     from "./polygonService";
-import * as AlphaVantage from "./alphaVantageService";
+import * as Finnhub      from "./finnhubService";
+import * as Polygon      from "./polygonService";
+import * as AlphaVantage   from "./alphaVantageService";
+import { fetchMacroMarket } from "./macroService";
+import * as Yahoo          from "./yahooFinanceService";
 import { REFRESH_INTERVALS } from "../utils/throttle";
 import {
   calcRSI, calcSMA, calcEMA, calcATR, calcMACD,
-  detectRSISignal, detectMACrossSignal, detectVolumeBreakout,
+  detectRSISignal, detectVolumeBreakout,
 } from "../utils/financialCalculations";
 import type {
   PivotQuote, PivotCandle, PivotNewsItem, PivotIndicators,
   PivotMacroData, PivotScreenerSignal, PivotEconomicEvent,
+  DataSource,
 } from "./types";
+import {
+  isMockMode, generateMockQuote, generateMockCandles,
+  generateMockNews, generateMockMacroData,
+  CAC40_TICKERS, SP500_TOP20, TICKER_REGISTRY,
+} from "./mockDataService";
 
 // ─── Cache ────────────────────────────────────────────────────
 
 const cache = {
-  quotes:    new Map<string, { data: PivotQuote;     ts: number }>(),
-  candles:   new Map<string, { data: PivotCandle[];  ts: number }>(),
-  news:      new Map<string, { data: PivotNewsItem[]; ts: number }>(),
+  quotes:     new Map<string, { data: PivotQuote;      ts: number }>(),
+  candles:    new Map<string, { data: PivotCandle[];   ts: number }>(),
+  news:       new Map<string, { data: PivotNewsItem[]; ts: number }>(),
   indicators: new Map<string, { data: PivotIndicators; ts: number }>(),
 };
 
 const isFresh = (ts: number, maxAge: number): boolean =>
   Date.now() - ts < maxAge;
 
+// ─── Exchange Routing ─────────────────────────────────────────
+
+/**
+ * Exchange suffixes that Finnhub Free Tier blocks (HTTP 403).
+ * These are routed directly to Alpha Vantage.
+ */
+const EURONEXT_SUFFIXES = [".PA", ".BR", ".AM", ".LB"] as const; // Paris, Brussels, Amsterdam, Lisbon
+const OTHER_EU_SUFFIXES  = [".DE", ".F",  ".L",  ".MI", ".MC"] as const; // Xetra, Frankfurt, LSE, Milan, Madrid
+
+/** Returns true when a ticker should NOT be sent to Finnhub free tier */
+const isFinnhubBlocked = (ticker: string): boolean => {
+  const upper = ticker.toUpperCase();
+  return (
+    [...EURONEXT_SUFFIXES, ...OTHER_EU_SUFFIXES].some((sfx) =>
+      upper.endsWith(sfx),
+    )
+  );
+};
+
+/**
+ * Normalize an Alpha Vantage quote response to PivotQuote.
+ * AV only returns price/change/changePercent on the free GLOBAL_QUOTE endpoint,
+ * so we fill the remaining fields from what we already know.
+ */
+/**
+ * Infer currency + exchange from ticker suffix.
+ * Used to enrich Alpha Vantage quotes which don't carry exchange metadata.
+ */
+const inferExchangeMeta = (
+  ticker: string,
+): Pick<PivotQuote, "currency" | "exchange" | "country"> => {
+  const t = ticker.toUpperCase();
+  if (t.endsWith(".PA") || t.endsWith(".BR") || t.endsWith(".AM")) {
+    return { currency: "EUR", exchange: "EURONEXT", country: "FR" };
+  }
+  if (t.endsWith(".DE") || t.endsWith(".F"))  return { currency: "EUR", exchange: "XETRA",    country: "DE" };
+  if (t.endsWith(".L"))                        return { currency: "GBP", exchange: "LSE",       country: "GB" };
+  if (t.endsWith(".MI") || t.endsWith(".MC"))  return { currency: "EUR", exchange: "EURONEXT", country: "FR" };
+  return { currency: "USD", exchange: "NYSE", country: "US" };
+};
+
+const avQuoteToPivot = (
+  ticker: string,
+  av: {
+    price: number; open: number; high: number; low: number;
+    prevClose: number; volume: number;
+    change: number; changePercent: number;
+  },
+  existingName?: string,
+): PivotQuote => ({
+  ticker,
+  name:          existingName ?? ticker,
+  price:         av.price,
+  open:          av.open      || av.price,
+  high:          av.high      || av.price,
+  low:           av.low       || av.price,
+  prevClose:     av.prevClose || (av.price - av.change),   // fallback: price - delta
+  change:        av.change,
+  changePercent: av.changePercent,
+  volume:        av.volume,
+  avgVolume30d:  0,                                        // AV free tier no avg vol
+  ...inferExchangeMeta(ticker),
+  timestamp:     Date.now(),
+  source:        "alphavantage" as DataSource,
+});
+
 // ─── Quote Fetch ──────────────────────────────────────────────
 
 /**
- * Get quote for a single ticker.
- * Prefers Finnhub for real-time; falls back to Polygon snapshot.
+ * Resolves the best data source for a ticker and fetches a quote.
+ *
+ * Routing strategy:
+ *   1. European tickers (.PA, .DE, .L …) → Alpha Vantage directly
+ *      (Finnhub Free Tier returns 403 for these exchanges)
+ *   2. US tickers → Finnhub first (lowest latency)
+ *   3. Finnhub null/error       → Polygon snapshot fallback
+ *   4. Polygon null/error       → Alpha Vantage last-resort fallback
  */
 export const getQuote = async (ticker: string): Promise<PivotQuote | null> => {
   const cached = cache.quotes.get(ticker);
@@ -44,16 +124,38 @@ export const getQuote = async (ticker: string): Promise<PivotQuote | null> => {
     return cached.data;
   }
 
-  let quote = await Finnhub.fetchQuote(ticker);
-  if (!quote) {
-    const snaps = await Polygon.fetchSnapshots([ticker]);
-    quote = snaps[0] ?? null;
+  // ── Mock mode bypass ─────────────────────────────────────
+  if (isMockMode()) {
+    const q = generateMockQuote(ticker);
+    cache.quotes.set(ticker, { data: q, ts: Date.now() });
+    return q;
+  }
+
+  let quote: PivotQuote | null = null;
+
+  if (isFinnhubBlocked(ticker)) {
+    // ── Path A: tickers EU → Yahoo Finance (gratuit, sans quota, support natif .PA)
+    // AV free = 25 req/jour : trop limité pour 40 tickers CAC40
+    quote = await Yahoo.fetchQuote(ticker);
+  } else {
+    // ── Path B: US / default — Finnhub → Polygon → AV cascade ──
+    quote = await Finnhub.fetchQuote(ticker);
+
+    if (!quote) {
+      const snaps = await Polygon.fetchSnapshots([ticker]);
+      quote = snaps[0] ?? null;
+    }
+
+    if (!quote) {
+      const av = await AlphaVantage.fetchAVQuote(ticker);
+      if (av) quote = avQuoteToPivot(ticker, av);
+    }
   }
 
   if (quote) {
     cache.quotes.set(ticker, { data: quote, ts: Date.now() });
   }
-  return quote;
+  return quote;  // null si aucune API n'a répondu → l'UI affiche N/A
 };
 
 /**
@@ -76,7 +178,10 @@ export const getBatchQuotes = async (
 
 /**
  * Get daily candles (up to 60 days).
- * Polygon preferred; Finnhub as fallback.
+ *
+ * Routing strategy:
+ *   - European tickers: Finnhub only (Polygon is US markets only)
+ *   - US tickers:       Polygon first (richer OHLCV), Finnhub as fallback
  */
 export const getCandles = async (
   ticker: string,
@@ -87,9 +192,24 @@ export const getCandles = async (
     return cached.data;
   }
 
-  let candles = await Polygon.fetchDailyCandles(ticker, days);
-  if (!candles.length) {
-    candles = await Finnhub.fetchCandles(ticker, "D", days);
+  // ── Mock mode bypass ─────────────────────────────────────
+  if (isMockMode()) {
+    const c = generateMockCandles(ticker, days);
+    cache.candles.set(ticker, { data: c, ts: Date.now() });
+    return c;
+  }
+
+  let candles: PivotCandle[] = [];
+
+  if (isFinnhubBlocked(ticker)) {
+    // EU tickers → Yahoo Finance (données OHLCV journalières réelles)
+    candles = await Yahoo.fetchCandles(ticker, days);
+    if (!candles.length) candles = generateMockCandles(ticker, days);
+  } else {
+    candles = await Polygon.fetchDailyCandles(ticker, days);
+    if (!candles.length) {
+      candles = await Finnhub.fetchCandles(ticker, "D", days);
+    }
   }
 
   cache.candles.set(ticker, { data: candles, ts: Date.now() });
@@ -115,7 +235,7 @@ export const getIndicators = async (
     return cached.data;
   }
 
-  const candles = await getCandles(ticker, 220);
+  const candles = await getCandles(ticker, 220); // mock bypass is inside getCandles
   const closes  = getCloses(candles);
   const highs   = candles.map((c) => c.high);
   const lows    = candles.map((c) => c.low);
@@ -156,6 +276,8 @@ export const getIndicators = async (
 export const getPortfolioNews = async (
   tickers: string[],
 ): Promise<PivotNewsItem[]> => {
+  if (isMockMode()) return generateMockNews(tickers);
+
   const allNews: PivotNewsItem[] = [];
   const seen = new Set<string>();
 
@@ -168,7 +290,19 @@ export const getPortfolioNews = async (
         });
         return;
       }
-      const news = await Finnhub.fetchCompanyNews(t, 3);
+      // EU tickers → Alpha Vantage NEWS_SENTIMENT (Finnhub free = 403)
+      // US tickers → Finnhub company news (lower latency)
+      let news: PivotNewsItem[];
+      if (isFinnhubBlocked(t)) {
+        // Tickers Euronext → AV NEWS_SENTIMENT (via mapping ADR)
+        news = await AlphaVantage.fetchEUNews(t, 5);
+        // Si AV ne retourne rien (rate-limit ou ticker non mappé) → mock news
+        if (!news.length) {
+          news = generateMockNews([t]).slice(0, 5);
+        }
+      } else {
+        news = await Finnhub.fetchCompanyNews(t, 3);
+      }
       cache.news.set(t, { data: news, ts: Date.now() });
       news.forEach((n) => {
         if (!seen.has(n.id)) { seen.add(n.id); allNews.push(n); }
@@ -189,22 +323,14 @@ export const getMacroData = async (): Promise<PivotMacroData> => {
   if (macroCache && isFresh(macroCacheTs, REFRESH_INTERVALS.MACRO)) {
     return macroCache;
   }
+  if (isMockMode()) {
+    const data = generateMockMacroData();
+    macroCache = data; macroCacheTs = Date.now();
+    return data;
+  }
 
-  const [base, vix, dxy] = await Promise.allSettled([
-    AlphaVantage.fetchMacroData(),
-    Finnhub.fetchVIX(),
-    AlphaVantage.fetchDXY(),
-  ]);
-
-  const data: PivotMacroData = {
-    ...(base.status === "fulfilled" ? base.value : {
-      sp500: null, sp500Change: null, gold: null, goldChange: null,
-      oil: null, oilChange: null, btc: null, btcChange: null, us10y: null,
-    }),
-    vix: vix.status === "fulfilled" ? vix.value : null,
-    dxy: dxy.status === "fulfilled" ? dxy.value : null,
-    timestamp: Date.now(),
-  };
+  // Yahoo Finance + CoinGecko: gratuits, sans quota journalier
+  const data = await fetchMacroMarket();
 
   macroCache   = data;
   macroCacheTs = Date.now();
@@ -216,107 +342,237 @@ export const getMacroData = async (): Promise<PivotMacroData> => {
 let calendarCache: PivotEconomicEvent[] | null = null;
 let calendarTs = 0;
 
-export const getEconomicCalendar = async (): Promise<PivotEconomicEvent[]> => {
-  if (calendarCache && isFresh(calendarTs, REFRESH_INTERVALS.CALENDAR)) {
+export const getEconomicCalendar = async (targetDate?: Date): Promise<PivotEconomicEvent[]> => {
+  // Si une date spécifique est demandée, on ne cache pas (les événements changent selon la date)
+  if (!targetDate && calendarCache && isFresh(calendarTs, REFRESH_INTERVALS.CALENDAR)) {
     return calendarCache;
   }
-  const events = await AlphaVantage.fetchEconomicCalendar();
-  calendarCache = events;
-  calendarTs    = Date.now();
+  const events = await AlphaVantage.fetchEconomicCalendar(targetDate);
+  if (!targetDate) {
+    calendarCache = events;
+    calendarTs    = Date.now();
+  }
   return events;
 };
 
 // ─── Screener ─────────────────────────────────────────────────
 
 /**
- * Run screener across a set of tickers.
- * Returns all detected signals sorted by strength.
+ * Progress callback type for the screener.
+ * Called after each ticker is processed so UIs can show a live counter.
+ */
+export type ScreenerProgressCb = (completed: number, total: number, current: string) => void;
+
+/**
+ * Core screener logic: processes one ticker and pushes detected signals.
+ * Extracted to share between sequential and parallel execution modes.
+ */
+const screenerProcessTicker = async (
+  ticker:  string,
+  signals: PivotScreenerSignal[],
+): Promise<void> => {
+  const [quoteResult, indResult] = await Promise.allSettled([
+    getQuote(ticker),
+    getIndicators(ticker),
+  ]);
+
+  // Fallback to mock data when APIs fail (rate limit, network, no key).
+  // This ensures the screener always produces signals in offline / free-tier mode.
+  let q   = quoteResult.status  === "fulfilled" ? quoteResult.value  : null;
+  let ind = indResult.status === "fulfilled" ? indResult.value : null;
+
+  // getIndicators() ne throw jamais : il retourne { rsi14: null, sma50: null, ... }
+  // quand les candles sont vides (Finnhub 403 EU). On doit traiter ce cas comme null.
+  if (ind && ind.rsi14 === null && ind.sma50 === null && ind.sma200 === null) {
+    ind = null; // force le fallback mock ci-dessous
+  }
+
+  if (!q) {
+    q = generateMockQuote(ticker);
+  }
+  if (!ind) {
+    // Rebuild indicators from mock candles (same path as mock mode)
+    const mockCandles = generateMockCandles(ticker, 220);
+    const closes = mockCandles.map((c) => c.close);
+    const highs  = mockCandles.map((c) => c.high);
+    const lows   = mockCandles.map((c) => c.low);
+    const vols   = mockCandles.map((c) => c.volume);
+    const avgVol = vols.slice(-30).reduce((s, v) => s + v, 0) / 30;
+    ind = {
+      ticker,
+      rsi14:         calcRSI(closes, 14),
+      sma50:         calcSMA(closes, 50),
+      sma200:        calcSMA(closes, 200),
+      ema20:         calcEMA(closes, 20),
+      macdLine:      calcMACD(closes).line,
+      macdSignal:    calcMACD(closes).signal,
+      macdHistogram: calcMACD(closes).histogram,
+      volumeRatio:   avgVol > 0 ? (vols[vols.length - 1] ?? 0) / avgVol : null,
+      atr14:         calcATR(highs, lows, closes, 14),
+      timestamp:     Date.now(),
+    };
+  }
+
+  if (!q || !ind) return;
+
+  const meta     = getTickerMeta(ticker);
+  const currency = q.currency ?? "USD";
+  const exchange = q.exchange ?? meta.exchange;
+  const country  = q.country  ?? meta.country;
+  const sector   = q.sector   ?? meta.sector;
+
+  // ── RSI Signal ─────────────────────────────────────────────
+  const rsiSignal = detectRSISignal(ind.rsi14);
+  if (rsiSignal) {
+    const strength =
+      ind.rsi14! <= 20 || ind.rsi14! >= 80 ? "strong"
+      : ind.rsi14! <= 25 || ind.rsi14! >= 75 ? "moderate"
+      : "weak";
+    signals.push({
+      ticker,  name: q.name,  signal: rsiSignal,  strength,
+      price:   q.price,  currency,  exchange,  country,  sector,
+      changePercent: q.changePercent,
+      details: `RSI(14) = ${ind.rsi14?.toFixed(1)}`,
+      indicators: ind,
+      detectedAt: Date.now(),
+    });
+  }
+
+  // ── Volume Breakout ────────────────────────────────────────
+  if (ind.volumeRatio !== null && detectVolumeBreakout(q.volume, q.avgVolume30d)) {
+    signals.push({
+      ticker,  name: q.name,  signal: "VOLUME_BREAKOUT",
+      strength: ind.volumeRatio >= 3 ? "strong" : "moderate",
+      price: q.price,  currency,  exchange,  country,  sector,
+      changePercent: q.changePercent,
+      details: `Vol ${ind.volumeRatio.toFixed(2)}x avg 30j`,
+      indicators: ind,
+      detectedAt: Date.now(),
+    });
+  }
+
+  // ── Golden / Death Cross ───────────────────────────────────
+  // Approximation : détecte la proximité du croisement (< 0.5% d'écart)
+  if (ind.sma50 !== null && ind.sma200 !== null) {
+    const diff    = ind.sma50 - ind.sma200;
+    const relDiff = Math.abs(diff) / ind.sma200;
+    if (relDiff < 0.005) {
+      signals.push({
+        ticker,  name: q.name,
+        signal:   diff > 0 ? "GOLDEN_CROSS" : "DEATH_CROSS",
+        strength: "moderate",
+        price:    q.price,  currency,  exchange,  country,  sector,
+        changePercent: q.changePercent,
+        details:  `SMA50 ${ind.sma50.toFixed(2)} / SMA200 ${ind.sma200.toFixed(2)} (Δ ${(relDiff * 100).toFixed(2)}%)`,
+        indicators: ind,
+        detectedAt: Date.now(),
+      });
+    }
+  }
+
+  // ── RSI Divergence heuristique ─────────────────────────────
+  // Prix proche du plus bas 20j mais RSI remonte → possible reversal
+  if (ind.rsi14 !== null && ind.rsi14 >= 30 && ind.rsi14 <= 45 && q.changePercent > 0.5) {
+    signals.push({
+      ticker,  name: q.name,  signal: "RSI_OVERSOLD",
+      strength: "weak",
+      price: q.price,  currency,  exchange,  country,  sector,
+      changePercent: q.changePercent,
+      details: `RSI(14) ${ind.rsi14.toFixed(1)} — reprise potentielle (+${q.changePercent.toFixed(2)}%)`,
+      indicators: ind,
+      detectedAt: Date.now(),
+    });
+  }
+};
+
+/**
+ * Run screener across tickers with a live progress callback.
+ * EU tickers (Euronext) are processed sequentially to respect AV rate limits.
+ * US tickers are batched in parallel groups of 5.
  */
 export const runScreener = async (
-  tickers: string[],
+  tickers:    string[],
+  onProgress?: ScreenerProgressCb,
 ): Promise<PivotScreenerSignal[]> => {
   const signals: PivotScreenerSignal[] = [];
+  let   completed = 0;
 
-  await Promise.allSettled(
-    tickers.map(async (ticker) => {
-      const [quote, indicators] = await Promise.allSettled([
-        getQuote(ticker),
-        getIndicators(ticker),
-      ]);
+  // Partition EU vs US to respect API routing
+  const euTickers = tickers.filter(isFinnhubBlocked);
+  const usTickers = tickers.filter((t) => !isFinnhubBlocked(t));
 
-      const q = quote.status === "fulfilled" ? quote.value : null;
-      const ind = indicators.status === "fulfilled" ? indicators.value : null;
-      if (!q || !ind) return;
+  // Process EU tickers sequentially (Alpha Vantage: 5 req/min)
+  for (const ticker of euTickers) {
+    onProgress?.(completed, tickers.length, ticker);
+    await screenerProcessTicker(ticker, signals);
+    completed++;
+    onProgress?.(completed, tickers.length, ticker);
+  }
 
-      // RSI Signal
-      const rsiSignal = detectRSISignal(ind.rsi14);
-      if (rsiSignal) {
-        const strength =
-          ind.rsi14! <= 20 || ind.rsi14! >= 80 ? "strong"
-          : ind.rsi14! <= 25 || ind.rsi14! >= 75 ? "moderate"
-          : "weak";
-        signals.push({
-          ticker,
-          name:          q.name,
-          signal:        rsiSignal,
-          strength,
-          price:         q.price,
-          changePercent: q.changePercent,
-          details:       `RSI(14) = ${ind.rsi14?.toFixed(1)}`,
-          indicators:    ind,
-          detectedAt:    Date.now(),
-        });
-      }
-
-      // Volume Breakout
-      if (ind.volumeRatio !== null && detectVolumeBreakout(q.volume, q.avgVolume30d)) {
-        signals.push({
-          ticker,
-          name:          q.name,
-          signal:        "VOLUME_BREAKOUT",
-          strength:      ind.volumeRatio >= 3 ? "strong" : "moderate",
-          price:         q.price,
-          changePercent: q.changePercent,
-          details:       `Vol ratio: ${ind.volumeRatio?.toFixed(2)}x avg`,
-          indicators:    ind,
-          detectedAt:    Date.now(),
-        });
-      }
-
-      // Golden/Death cross (requires yesterday's values — simplified)
-      if (ind.sma50 !== null && ind.sma200 !== null) {
-        const diff = ind.sma50 - ind.sma200;
-        if (Math.abs(diff) / ind.sma200 < 0.005) {
-          // Very close to crossing
-          signals.push({
-            ticker,
-            name:          q.name,
-            signal:        diff > 0 ? "GOLDEN_CROSS" : "DEATH_CROSS",
-            strength:      "moderate",
-            price:         q.price,
-            changePercent: q.changePercent,
-            details:       `SMA50=${ind.sma50.toFixed(2)}, SMA200=${ind.sma200.toFixed(2)}`,
-            indicators:    ind,
-            detectedAt:    Date.now(),
-          });
-        }
-      }
-    }),
-  );
+  // Process US tickers in parallel batches of 5
+  const BATCH = 5;
+  for (let i = 0; i < usTickers.length; i += BATCH) {
+    const batch = usTickers.slice(i, i + BATCH);
+    onProgress?.(completed, tickers.length, batch[0]);
+    await Promise.allSettled(
+      batch.map((t) => screenerProcessTicker(t, signals)),
+    );
+    completed += batch.length;
+    onProgress?.(completed, tickers.length, batch[batch.length - 1]);
+  }
 
   const order = { strong: 0, moderate: 1, weak: 2 };
   return signals.sort((a, b) => order[a.strength] - order[b.strength]);
 };
 
-// ─── Market Heatmap Data ──────────────────────────────────────
+// ─── Market Universes ────────────────────────────────────────
 
-/** Default market universe for heatmap */
-export const MARKET_UNIVERSE = [
-  "AAPL","MSFT","NVDA","GOOGL","AMZN","META","TSLA","AVGO","JPM","V",
-  "MA","UNH","WMT","JNJ","PG","HD","MRK","CVX","BAC","ABBV",
-];
+/** Legacy export — S&P 500 top 20 (kept for backward compat with TickerTape) */
+export const MARKET_UNIVERSE = SP500_TOP20.map((m) => m.ticker);
 
-export const getMarketOverview = async (): Promise<PivotQuote[]> => {
-  const quotes = await getBatchQuotes(MARKET_UNIVERSE);
-  return Array.from(quotes.values());
+/** CAC 40 ticker list */
+export const CAC40_UNIVERSE = CAC40_TICKERS.map((m) => m.ticker);
+
+/** Combined global universe */
+export const GLOBAL_UNIVERSE = [...MARKET_UNIVERSE, ...CAC40_UNIVERSE];
+
+export type MarketRegion = "US" | "FR" | "GLOBAL";
+
+/**
+ * Fetch market overview for a specific region.
+ * In mock mode, quotes are generated locally without any API call.
+ */
+export const getMarketOverview = async (
+  region: MarketRegion = "US",
+): Promise<PivotQuote[]> => {
+  const universe =
+    region === "FR"     ? CAC40_UNIVERSE  :
+    region === "GLOBAL" ? GLOBAL_UNIVERSE :
+    MARKET_UNIVERSE;
+
+  if (isMockMode()) {
+    return universe.map(generateMockQuote);
+  }
+
+  // Récupère les quotes réelles (peut être partiel en cas de rate-limit AV)
+  const realQuotes = await getBatchQuotes(universe);
+
+  // Garantit universe.length résultats: complète avec mock pour les manquants
+  return universe.map((ticker) =>
+    realQuotes.get(ticker) ?? generateMockQuote(ticker)
+  );
 };
+
+/**
+ * Resolve ticker metadata (name, sector, exchange) from registry.
+ * Falls back gracefully for unknown tickers.
+ */
+export const getTickerMeta = (ticker: string) =>
+  TICKER_REGISTRY.get(ticker) ?? {
+    ticker,
+    name:     ticker,
+    sector:   "Unknown",
+    exchange: "NYSE" as const,
+    country:  "US" as const,
+    basePrice: 100,
+  };

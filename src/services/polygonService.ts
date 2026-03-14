@@ -76,6 +76,9 @@ const normalizeSnapshot = (
   changePercent: snap.todaysChangePerc,
   volume:        snap.day.v,
   avgVolume30d:  avgVolume,
+  currency:      "USD",           // Polygon free tier is US markets only
+  exchange:      "NYSE",
+  country:       "US",
   timestamp:     snap.lastTrade.t,
   source:        "polygon",
 });

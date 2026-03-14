@@ -6,7 +6,7 @@
  * ============================================================
  */
 
-// ─── Quote ──────────────────────────────────────────────────
+// ─── Quote ───────────────────────────────────────────────────
 export interface PivotQuote {
   ticker:         string;
   name:           string;
@@ -15,20 +15,26 @@ export interface PivotQuote {
   high:           number;
   low:            number;
   prevClose:      number;
-  change:         number;       // absolute
-  changePercent:  number;       // %
+  change:         number;        // absolute Δ
+  changePercent:  number;        // %
   volume:         number;
   avgVolume30d:   number;
   marketCap?:     number;
   sector?:        string;
-  timestamp:      number;       // epoch ms
+  /** ISO 4217 — "USD" for US equities, "EUR" for Euronext */
+  currency:       "USD" | "EUR" | "GBP" | "JPY" | "CHF";
+  /** Exchange mic or short label */
+  exchange?:      "NYSE" | "NASDAQ" | "EURONEXT" | "XETRA" | "LSE";
+  /** ISO alpha-2 country of listing */
+  country?:       "US" | "FR" | "DE" | "NL" | "BE" | "GB";
+  timestamp:      number;        // epoch ms
   source:         DataSource;
 }
 
-// ─── OHLCV Candle ────────────────────────────────────────────
+// ─── OHLCV Candle ─────────────────────────────────────────────
 export interface PivotCandle {
   ticker:    string;
-  time:      number;            // epoch ms
+  time:      number;             // epoch ms
   open:      number;
   high:      number;
   low:       number;
@@ -36,36 +42,62 @@ export interface PivotCandle {
   volume:    number;
 }
 
-// ─── News Item ───────────────────────────────────────────────
+// ─── News Item ────────────────────────────────────────────────
 export interface PivotNewsItem {
-  id:         string;
-  ticker?:    string;           // linked ticker if any
-  sector?:    string;
-  headline:   string;
-  summary:    string;
-  source:     string;
-  url:        string;
-  sentiment?: "bullish" | "bearish" | "neutral";
-  publishedAt: number;         // epoch ms
-  tags:       string[];
+  id:          string;
+  ticker?:     string;           // linked ticker if any
+  sector?:     string;
+  headline:    string;
+  summary:     string;
+  source:      string;
+  url:         string;
+  sentiment?:  "bullish" | "bearish" | "neutral";
+  publishedAt: number;           // epoch ms
+  tags:        string[];
 }
 
-// ─── Technical Indicator ─────────────────────────────────────
+// ─── Technical Indicators ─────────────────────────────────────
 export interface PivotIndicators {
-  ticker:         string;
-  rsi14:          number | null;
-  sma50:          number | null;
-  sma200:         number | null;
-  ema20:          number | null;
-  macdLine:       number | null;
-  macdSignal:     number | null;
-  macdHistogram:  number | null;
-  volumeRatio:    number | null;  // volume / avg30d
-  atr14:          number | null;
-  timestamp:      number;
+  ticker:          string;
+  rsi14:           number | null;
+  sma50:           number | null;
+  sma200:          number | null;
+  ema20:           number | null;
+  macdLine:        number | null;
+  macdSignal:      number | null;
+  macdHistogram:   number | null;
+  volumeRatio:     number | null; // volume / avg30d
+  atr14:           number | null;
+  timestamp:       number;
 }
 
-// ─── Macro Indicator ─────────────────────────────────────────
+// ─── Screener Signal ──────────────────────────────────────────
+export type SignalType =
+  | "RSI_OVERSOLD"
+  | "RSI_OVERBOUGHT"
+  | "GOLDEN_CROSS"
+  | "DEATH_CROSS"
+  | "VOLUME_BREAKOUT"
+  | "PRICE_BREAKOUT";
+
+export interface PivotScreenerSignal {
+  ticker:        string;
+  name:          string;
+  signal:        SignalType;
+  strength:      "weak" | "moderate" | "strong";
+  price:         number;
+  /** ISO 4217 currency of the price — critical for correct display */
+  currency:      PivotQuote["currency"];
+  exchange?:     PivotQuote["exchange"];
+  country?:      PivotQuote["country"];
+  sector?:       string;
+  changePercent: number;
+  details:       string;
+  indicators:    Partial<PivotIndicators>;
+  detectedAt:    number;         // epoch ms
+}
+
+// ─── Macro Indicator ──────────────────────────────────────────
 export interface PivotMacroData {
   vix:          number | null;
   dxy:          number | null;
@@ -77,17 +109,17 @@ export interface PivotMacroData {
   oilChange:    number | null;
   btc:          number | null;
   btcChange:    number | null;
-  us10y:        number | null;  // 10-year Treasury yield
+  us10y:        number | null;
   timestamp:    number;
 }
 
-// ─── Economic Event ──────────────────────────────────────────
+// ─── Economic Event ───────────────────────────────────────────
 export type EventImportance = "low" | "medium" | "high";
 export interface PivotEconomicEvent {
   id:          string;
   title:       string;
   country:     string;
-  datetime:    number;          // epoch ms
+  datetime:    number;           // epoch ms
   importance:  EventImportance;
   actual?:     string;
   forecast?:   string;
@@ -95,52 +127,42 @@ export interface PivotEconomicEvent {
   currency:    string;
 }
 
-// ─── Screener Signal ─────────────────────────────────────────
-export type SignalType =
-  | "RSI_OVERSOLD"
-  | "RSI_OVERBOUGHT"
-  | "GOLDEN_CROSS"
-  | "DEATH_CROSS"
-  | "VOLUME_BREAKOUT"
-  | "PRICE_BREAKOUT";
-
-export interface PivotScreenerSignal {
-  ticker:       string;
-  name:         string;
-  signal:       SignalType;
-  strength:     "weak" | "moderate" | "strong";
-  price:        number;
-  changePercent: number;
-  details:      string;
-  indicators:   Partial<PivotIndicators>;
-  detectedAt:   number;        // epoch ms
-}
-
-// ─── Portfolio Position ──────────────────────────────────────
+// ─── Portfolio Position ───────────────────────────────────────
 export interface Position {
-  id:          string;
-  ticker:      string;
-  name:        string;
-  sector:      string;
-  quantity:    number;
-  avgCost:     number;         // Prix de Revient Unitaire (PRU)
-  addedAt:     number;         // epoch ms
+  id:       string;
+  ticker:   string;
+  name:     string;
+  sector:   string;
+  quantity: number;
+  avgCost:  number;              // PRU — en devise locale du ticker
+  addedAt:  number;              // epoch ms
 }
 
 export interface PositionWithPnL extends Position {
-  currentPrice: number;
-  change:       number;
+  currentPrice:  number;
+  open:          number;         // cours d'ouverture du jour
+  prevClose:     number;         // clôture de la veille
+  change:        number;
   changePercent: number;
-  marketValue:  number;
-  pnl:          number;        // unrealized P&L
-  pnlPercent:   number;
-  dayPnL:       number;
+  marketValue:   number;
+  pnl:           number;         // unrealized P&L
+  pnlPercent:    number;
+  dayPnL:        number;
   dayPnLPercent: number;
-  sparkline:    number[];      // last N closes for miniChart
+  sparkline:     number[];
+  currency:      PivotQuote["currency"];
 }
 
-// ─── Metadata ────────────────────────────────────────────────
-export type DataSource = "finnhub" | "polygon" | "alphavantage" | "mock";
+// ─── Screener Progress ────────────────────────────────────────
+export interface ScreenerProgress {
+  total:     number;
+  completed: number;
+  current:   string;            // ticker being processed
+  phase:     "idle" | "running" | "done";
+}
+
+// ─── Meta ─────────────────────────────────────────────────────
+export type DataSource = "finnhub" | "polygon" | "alphavantage" | "yahoo" | "coingecko" | "mock";
 
 export interface ApiStatus {
   finnhub:      "ok" | "limited" | "error" | "idle";

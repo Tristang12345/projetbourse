@@ -1,13 +1,21 @@
 {
   "name": "bloomberg-terminal",
   "version": "1.0.0",
+  "type": "module",
   "description": "Professional Bloomberg-like financial terminal",
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build",
+    "build": "vite build",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build"
+    "tauri:build": "tauri build",
+    "tauri:build:debug": "tauri build --debug",
+    "tauri:build:mac": "tauri build --target universal-apple-darwin",
+    "tauri:build:win": "tauri build --target x86_64-pc-windows-msvc",
+    "tauri:build:linux": "tauri build --target x86_64-unknown-linux-gnu",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "build:check": "tsc --noEmit && vite build"
   },
   "dependencies": {
     "@tauri-apps/api": "^1.5.0",

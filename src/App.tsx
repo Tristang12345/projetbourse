@@ -7,6 +7,7 @@
 import React, { useEffect } from "react";
 import {
   BarChart2, Newspaper, Activity, Globe2, Zap, X, ChevronRight,
+  WifiOff, Bell, FlaskConical,
 } from "lucide-react";
 import { useTerminalStore } from "./store/useTerminalStore";
 import { StatusBar }         from "./components/StatusBar";
@@ -16,6 +17,10 @@ import { MarketActivity }    from "./screens/MarketActivity";
 import { MacroCalendar }     from "./screens/MacroCalendar";
 import { Screener }          from "./screens/Screener";
 import { usePersistPositions, useCacheNews } from "./hooks/useTauriDb";
+import { useConnectionState } from "./hooks/useConnectionState";
+import { useAlertStore } from "./store/useAlertStore";
+import { ErrorBoundary } from "./components/ErrorBoundary";
+import { isMockMode } from "./services/mockDataService";
 import { formatPercent, colorClass } from "./utils/financialCalculations";
 import { MARKET_UNIVERSE } from "./services/dataOrchestrator";
 
@@ -94,6 +99,80 @@ const FocusBanner: React.FC = () => {
 
 // ─── Main App ─────────────────────────────────────────────────
 
+// ─── Mock Mode Banner ────────────────────────────────────────
+
+const MockModeBanner: React.FC = () => {
+  const [dismissed, setDismissed] = React.useState(false);
+  if (!isMockMode() || dismissed) return null;
+  return (
+    <div className="flex items-center gap-2 px-4 py-1.5 bg-warn/5 border-b border-warn/20 text-2xs font-mono shrink-0">
+      <FlaskConical size={11} className="text-warn" />
+      <span className="text-warn font-semibold">MOCK MODE</span>
+      <span className="text-terminal-dim">— données simulées. Ajoutez vos clés API dans</span>
+      <code className="text-terminal-text bg-terminal-surface px-1 rounded">.env.local</code>
+      <span className="text-terminal-dim">pour activer les données en direct.</span>
+      <button onClick={() => setDismissed(true)} className="ml-auto text-terminal-dim hover:text-terminal-text">
+        <X size={10} />
+      </button>
+    </div>
+  );
+};
+
+// ─── Alert Toast ─────────────────────────────────────────────
+
+const AlertToast: React.FC = () => {
+  const { alerts, dismissAlert } = useAlertStore();
+  const { quotes } = useTerminalStore();
+  const triggered = alerts.filter((a) => a.status === "triggered");
+
+  // Check alerts on every quote update
+  React.useEffect(() => {
+    const prices: Record<string, number> = {};
+    Object.entries(quotes).forEach(([t, q]) => { prices[t] = q.price; });
+    useAlertStore.getState().checkAlerts(prices);
+  }, [quotes]);
+
+  if (!triggered.length) return null;
+
+  return (
+    <div className="fixed bottom-8 right-4 flex flex-col gap-2 z-50">
+      {triggered.slice(0, 3).map((alert) => (
+        <div
+          key={alert.id}
+          className="flex items-center gap-3 bg-terminal-elevated border border-warn/40 rounded-lg px-4 py-2.5 shadow-panel animate-slide-up"
+        >
+          <Bell size={12} className="text-warn" />
+          <div className="font-mono">
+            <span className="text-sm font-bold text-terminal-text">{alert.ticker}</span>
+            <span className="text-xs text-terminal-dim ml-2">
+              {alert.direction === "above" ? "≥" : "≤"} {alert.targetPrice.toFixed(2)}
+            </span>
+            {alert.note && <span className="text-2xs text-terminal-dim block">{alert.note}</span>}
+          </div>
+          <button onClick={() => dismissAlert(alert.id)} className="ml-2 text-terminal-dim hover:text-terminal-text">
+            <X size={10} />
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+};
+
+// ─── Offline Banner ───────────────────────────────────────────
+
+const ConnectionBanner: React.FC = () => {
+  const { status } = useConnectionState();
+  if (status !== "offline") return null;
+  return (
+    <div className="flex items-center gap-2 px-4 py-1 text-2xs font-mono shrink-0 border-b bg-down/5 border-down/20 text-down">
+      <WifiOff size={10} />
+      HORS LIGNE
+    </div>
+  );
+};
+
+// ─── Main App ─────────────────────────────────────────────────
+
 const App: React.FC = () => {
   const { activeTab, setActiveTab } = useTerminalStore();
   const ActiveScreen = TABS[activeTab].component;
@@ -116,6 +195,11 @@ const App: React.FC = () => {
 
   return (
     <div className="flex flex-col h-screen bg-terminal-bg text-terminal-text overflow-hidden select-none">
+      {/* ── Banners (mock mode / offline / alerts) ── */}
+      <MockModeBanner />
+      <ConnectionBanner />
+      <AlertToast />
+
       {/* ── Top Bar ── */}
       <div
         className="flex items-center border-b border-terminal-border bg-terminal-surface shrink-0"
@@ -159,7 +243,9 @@ const App: React.FC = () => {
 
       {/* ── Main Content ── */}
       <div className="flex-1 min-h-0">
-        <ActiveScreen />
+        <ErrorBoundary screenName={TABS[activeTab].label}>
+          <ActiveScreen />
+        </ErrorBoundary>
       </div>
 
       {/* ── Status Bar ── */}

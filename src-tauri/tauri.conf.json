@@ -1,45 +1,85 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/schema.json",
   "build": {
-    "beforeDevCommand":   "npm run dev",
+    "beforeDevCommand": "npm run dev",
     "beforeBuildCommand": "npm run build",
-    "devPath":            "http://localhost:1420",
-    "distDir":            "../dist",
-    "withGlobalTauri":    true
+    "devPath": "http://localhost:1420",
+    "distDir": "../dist",
+    "withGlobalTauri": true
   },
   "package": {
-    "productName": "Bloomberg Terminal",
-    "version":     "1.0.0"
+    "productName": "Bloomberg Terminal Pro",
+    "version": "1.0.0"
   },
   "tauri": {
     "allowlist": {
       "all": false,
-      "shell": { "all": false, "open": true },
+      "shell": {
+        "all": false,
+        "open": true
+      },
       "http": {
-        "all":   true,
-        "scope": ["https://*.finnhub.io/**", "https://*.polygon.io/**", "https://*.alphavantage.co/**"]
+        "all": false,
+        "scope": [
+          "https://finnhub.io/**",
+          "https://api.polygon.io/**",
+          "https://www.alphavantage.co/**",
+          "https://query1.finance.yahoo.com/**",
+          "https://query2.finance.yahoo.com/**",
+          "https://api.coingecko.com/**",
+          "https://www.google.com/**"
+        ]
       }
     },
     "bundle": {
-      "active":      true,
-      "icon":        ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico"],
-      "identifier":  "com.bloomberg.terminal",
-      "targets":     "all"
+      "active": true,
+      "identifier": "com.bloomberg-terminal.pro",
+      "icon": [
+        "icons/32x32.png",
+        "icons/128x128.png",
+        "icons/128x128@2x.png",
+        "icons/icon.icns",
+        "icons/icon.ico"
+      ],
+      "copyright": "\u00a9 2024 Bloomberg Terminal Pro",
+      "category": "Finance",
+      "targets": "all",
+      "macOS": {
+        "frameworks": [],
+        "minimumSystemVersion": "10.13"
+      },
+      "windows": {
+        "certificateThumbprint": null,
+        "digestAlgorithm": "sha256"
+      },
+      "deb": {
+        "depends": []
+      },
+      "appimage": {
+        "bundleMediaFramework": false
+      }
     },
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; connect-src https://www.google.com https://api.coingecko.com https://finnhub.io https://api.polygon.io https://www.alphavantage.co https://query1.finance.yahoo.com https://query2.finance.yahoo.com; style-src 'self' 'unsafe-inline'; img-src 'self' data:; script-src 'self'"
     },
-    "updater": { "active": false },
+    "updater": {
+      "active": false,
+      "dialog": true
+    },
     "windows": [
       {
-        "fullscreen":  false,
-        "resizable":   true,
-        "title":       "Bloomberg Terminal",
-        "width":       1400,
-        "height":      900,
-        "minWidth":    1100,
-        "minHeight":   700,
-        "decorations": true
+        "label": "main",
+        "title": "Bloomberg Terminal Pro",
+        "width": 1440,
+        "height": 900,
+        "minWidth": 1100,
+        "minHeight": 700,
+        "resizable": true,
+        "fullscreen": false,
+        "decorations": true,
+        "center": true,
+        "skipTaskbar": false,
+        "fileDropEnabled": false
       }
     ]
   }

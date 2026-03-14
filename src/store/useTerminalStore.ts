@@ -78,16 +78,8 @@ export const useTerminalStore = create<TerminalState>()(
       focusedTicker: null,
       setFocusedTicker: (ticker) => set({ focusedTicker: ticker }),
 
-      // ── Portfolio ──
-      positions: [
-        // Seed positions for demo
-        { id: "1", ticker: "AAPL",  name: "Apple Inc.",        sector: "Technology",  quantity: 50,  avgCost: 178.50, addedAt: Date.now() - 90 * 86400000 },
-        { id: "2", ticker: "NVDA",  name: "NVIDIA Corp.",       sector: "Technology",  quantity: 20,  avgCost: 495.00, addedAt: Date.now() - 60 * 86400000 },
-        { id: "3", ticker: "JPM",   name: "JPMorgan Chase",     sector: "Finance",     quantity: 30,  avgCost: 198.00, addedAt: Date.now() - 45 * 86400000 },
-        { id: "4", ticker: "MSFT",  name: "Microsoft Corp.",    sector: "Technology",  quantity: 25,  avgCost: 380.00, addedAt: Date.now() - 30 * 86400000 },
-        { id: "5", ticker: "AMZN",  name: "Amazon.com Inc.",    sector: "Consumer",    quantity: 15,  avgCost: 185.00, addedAt: Date.now() - 20 * 86400000 },
-        { id: "6", ticker: "META",  name: "Meta Platforms",     sector: "Technology",  quantity: 20,  avgCost: 490.00, addedAt: Date.now() - 15 * 86400000 },
-      ],
+      // ── Portfolio — vide au démarrage, hydraté depuis localStorage / SQLite ──
+      positions: [],
 
       addPosition: (pos) =>
         set((s) => ({
@@ -143,7 +135,10 @@ export const useTerminalStore = create<TerminalState>()(
             pnlPercent:    pnlPct,
             dayPnL,
             dayPnLPercent: dayPct,
-            sparkline:     [],  // populated by Portfolio screen
+            sparkline:     [],              // populated by Portfolio screen
+            currency:      q?.currency      ?? "USD",
+            open:          q?.open          ?? price,
+            prevClose:     q?.prevClose     ?? price,
           };
         });
       },
@@ -189,6 +184,7 @@ export const useTerminalStore = create<TerminalState>()(
     }),
     {
       name:    "bloomberg-terminal-state",
+      version: 3,  // bump when Position shape changes to trigger migration
       storage: createJSONStorage(() => localStorage),
       // Only persist positions & settings; not live data
       partialize: (s) => ({
@@ -197,6 +193,56 @@ export const useTerminalStore = create<TerminalState>()(
         lastSnapshot:  s.lastSnapshot,
         focusedTicker: s.focusedTicker,
       }),
+      // Migration: si le format stocké est d'une version antérieure,
+      // on conserve les positions (champs de base) et on purge le reste
+      migrate: (persisted: any, version: number) => {
+        if (version < 3) {
+          return {
+            ...persisted,
+            // Garantit que les positions ont bien les champs obligatoires
+            positions: (persisted.positions ?? []).map((p: any) => ({
+              id:       p.id       ?? crypto.randomUUID(),
+              ticker:   p.ticker   ?? "",
+              name:     p.name     ?? p.ticker ?? "",
+              sector:   p.sector   ?? "Unknown",
+              quantity: p.quantity ?? 0,
+              avgCost:  p.avgCost  ?? p.avg_cost ?? 0,
+              addedAt:  p.addedAt  ?? p.added_at ?? Date.now(),
+            })),
+          };
+        }
+        return persisted;
+      },
+      onRehydrateStorage: () => (state, error) => {
+        if (error) {
+          console.error("[Store] Échec de rehydratation localStorage:", error);
+          return;
+        }
+        // Zustand v4 : on ne peut pas muter state directement ici.
+        // On utilise setState via un microtask après la fin de l'hydratation.
+        // Premier lancement ou data loss → pré-remplir avec BNP.PA
+        if (state && state.positions.length === 0) {
+          Promise.resolve().then(() => {
+            // Vérifie à nouveau (double-check) pour éviter les races
+            const current = useTerminalStore.getState();
+            if (current.positions.length === 0) {
+              useTerminalStore.setState({
+                positions: [
+                  {
+                    id:       "bnp-default-1",
+                    ticker:   "BNP.PA",
+                    name:     "BNP Paribas",
+                    sector:   "Finance",
+                    quantity: 50,
+                    avgCost:  95.21,
+                    addedAt:  Date.now(),
+                  },
+                ],
+              });
+            }
+          });
+        }
+      },
     },
   ),
 );

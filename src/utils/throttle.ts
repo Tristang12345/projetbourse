@@ -13,7 +13,8 @@ export interface ThrottleConfig {
 
 // Free-tier quotas (conservative estimates)
 export const API_QUOTAS: Record<string, ThrottleConfig> = {
-  finnhub:      { requestsPerMinute: 60, requestsPerDay: 1440 },
+  finnhub:      { requestsPerMinute: 60,  requestsPerDay: 1440 },
+  yahoo:        { requestsPerMinute: 100, requestsPerDay: 2000 },  // no official limit — conservative
   polygon:      { requestsPerMinute: 5,  requestsPerDay: 500  },
   alphavantage: { requestsPerMinute: 5,  requestsPerDay: 500  },
 };
