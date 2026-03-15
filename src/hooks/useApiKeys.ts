@@ -1,13 +1,10 @@
 /**
- * ============================================================
- * useApiKeys — Chargement sécurisé des clés API.
- * Tauri : stockées en SQLite local (non exposées dans le bundle).
- * Browser/dev : fallback sur VITE_* de .env.local
- * ============================================================
+ * useApiKeys — Chargement des clés API.
+ * Tauri : depuis SQLite local via invoke().
+ * Browser/dev : fallback sur VITE_* de .env.local.
  */
 
 import { useState, useEffect, useCallback } from "react";
-import { invoke } from "@tauri-apps/api/tauri";
 
 export interface ApiKeys {
   finnhub:      string;
@@ -15,40 +12,35 @@ export interface ApiKeys {
   alphavantage: string;
 }
 
-/** Cache en mémoire — évite des invoke() répétés */
 let keysCache: ApiKeys | null = null;
 
 const isTauriEnv = (): boolean =>
   typeof window !== "undefined" && "__TAURI__" in window;
 
-/**
- * Charge les clés API depuis Tauri (SQLite) ou .env.local (dev).
- * Appelé par les services finnhub/polygon/alphavantage.
- */
 export const loadApiKeys = async (): Promise<ApiKeys> => {
   if (keysCache) return keysCache;
 
   if (isTauriEnv()) {
     try {
+      const { invoke } = await import("@tauri-apps/api/tauri");
       const keys = await invoke<ApiKeys>("get_api_keys");
       keysCache = {
-        finnhub:      keys.finnhub      || import.meta.env.VITE_FINNHUB_KEY      || "",
-        polygon:      keys.polygon      || import.meta.env.VITE_POLYGON_KEY      || "",
-        alphavantage: keys.alphavantage || import.meta.env.VITE_ALPHAVANTAGE_KEY || "",
+        finnhub:      keys.finnhub      || (import.meta.env.VITE_FINNHUB_KEY      ?? ""),
+        polygon:      keys.polygon      || (import.meta.env.VITE_POLYGON_KEY      ?? ""),
+        alphavantage: keys.alphavantage || (import.meta.env.VITE_ALPHAVANTAGE_KEY ?? ""),
       };
     } catch {
-      // DB pas encore init → fallback VITE_*
       keysCache = {
-        finnhub:      import.meta.env.VITE_FINNHUB_KEY      || "",
-        polygon:      import.meta.env.VITE_POLYGON_KEY      || "",
-        alphavantage: import.meta.env.VITE_ALPHAVANTAGE_KEY || "",
+        finnhub:      import.meta.env.VITE_FINNHUB_KEY      ?? "",
+        polygon:      import.meta.env.VITE_POLYGON_KEY      ?? "",
+        alphavantage: import.meta.env.VITE_ALPHAVANTAGE_KEY ?? "",
       };
     }
   } else {
     keysCache = {
-      finnhub:      import.meta.env.VITE_FINNHUB_KEY      || "",
-      polygon:      import.meta.env.VITE_POLYGON_KEY      || "",
-      alphavantage: import.meta.env.VITE_ALPHAVANTAGE_KEY || "",
+      finnhub:      import.meta.env.VITE_FINNHUB_KEY      ?? "",
+      polygon:      import.meta.env.VITE_POLYGON_KEY      ?? "",
+      alphavantage: import.meta.env.VITE_ALPHAVANTAGE_KEY ?? "",
     };
   }
 
@@ -57,7 +49,6 @@ export const loadApiKeys = async (): Promise<ApiKeys> => {
 
 export const invalidateKeysCache = () => { keysCache = null; };
 
-/** Hook React pour l'écran Settings */
 export const useApiKeys = () => {
   const [keys,    setKeys]    = useState<ApiKeys>({ finnhub: "", polygon: "", alphavantage: "" });
   const [loading, setLoading] = useState(true);
@@ -78,6 +69,7 @@ export const useApiKeys = () => {
       return;
     }
     try {
+      const { invoke } = await import("@tauri-apps/api/tauri");
       await invoke("save_api_keys", { keys: newKeys });
       invalidateKeysCache();
       keysCache = newKeys;
