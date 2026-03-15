@@ -1,8 +1,7 @@
 /**
  * ============================================================
  * SCREEN 2 — NEWS INTELLIGENCE
- * Real-time news filtered by portfolio tickers.
- * Auto-tagging by sector, sentiment color coding.
+ * ✅ Point 8 : Focus Mode — filtre automatiquement sur le ticker focalisé
  * ============================================================
  */
 
@@ -10,10 +9,9 @@ import React, { useState, useMemo } from "react";
 import { ExternalLink, Filter, Tag, Clock } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import { useTerminalStore } from "../store/useTerminalStore";
-import { useNewsRefresh } from "../hooks/useDataRefresh";
+import { useNewsRefresh }   from "../hooks/useDataRefresh";
 import type { PivotNewsItem } from "../services/types";
 
-// ─── Sector tag colors ────────────────────────────────────────
 const SECTOR_COLORS: Record<string, string> = {
   Technology:    "text-blue-400   border-blue-400/40   bg-blue-400/5",
   Finance:       "text-green-400  border-green-400/40  bg-green-400/5",
@@ -33,14 +31,9 @@ const sentimentColor = (s?: string) => {
   return "text-terminal-dim";
 };
 
-// ─── News Item Card ───────────────────────────────────────────
-
-const NewsCard: React.FC<{ item: PivotNewsItem; isFocused: boolean }> = ({
-  item, isFocused,
-}) => {
+const NewsCard: React.FC<{ item: PivotNewsItem; isFocused: boolean }> = ({ item, isFocused }) => {
   const { positions, setFocusedTicker, focusedTicker } = useTerminalStore();
   const sector = positions.find((p) => p.ticker === item.ticker)?.sector;
-  const sectorColor = getSectorColor(sector);
 
   return (
     <div
@@ -50,7 +43,6 @@ const NewsCard: React.FC<{ item: PivotNewsItem; isFocused: boolean }> = ({
         focusedTicker === item.ticker ? null : item.ticker
       )}
     >
-      {/* Row 1: Tags + time */}
       <div className="flex items-center justify-between mb-1.5">
         <div className="flex items-center gap-2 flex-wrap">
           {item.ticker && (
@@ -59,7 +51,7 @@ const NewsCard: React.FC<{ item: PivotNewsItem; isFocused: boolean }> = ({
             </span>
           )}
           {sector && (
-            <span className={`text-2xs font-mono border px-1.5 py-0.5 rounded-sm ${sectorColor}`}>
+            <span className={`text-2xs font-mono border px-1.5 py-0.5 rounded-sm ${getSectorColor(sector)}`}>
               {sector}
             </span>
           )}
@@ -74,34 +66,19 @@ const NewsCard: React.FC<{ item: PivotNewsItem; isFocused: boolean }> = ({
           {formatDistanceToNow(item.publishedAt, { addSuffix: true })}
         </div>
       </div>
-
-      {/* Row 2: Headline */}
-      <p className="text-sm text-terminal-text font-sans leading-snug mb-1.5">
-        {item.headline}
-      </p>
-
-      {/* Row 3: Summary + source */}
+      <p className="text-sm text-terminal-text font-sans leading-snug mb-1.5">{item.headline}</p>
       <div className="flex items-start justify-between gap-4">
-        <p className="text-xs text-terminal-dim font-sans leading-relaxed line-clamp-2 flex-1">
-          {item.summary}
-        </p>
+        <p className="text-xs text-terminal-dim font-sans leading-relaxed line-clamp-2 flex-1">{item.summary}</p>
         <div className="flex items-center gap-2 shrink-0 mt-0.5">
           <span className={`text-2xs font-mono ${sentimentColor(item.sentiment)}`}>
             {item.sentiment?.toUpperCase()}
           </span>
-          <a
-            href={item.url}
-            onClick={(e) => e.stopPropagation()}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-terminal-dim hover:text-terminal-accent transition-colors"
-          >
+          <a href={item.url} onClick={(e) => e.stopPropagation()} target="_blank" rel="noopener noreferrer"
+            className="text-terminal-dim hover:text-terminal-accent transition-colors">
             <ExternalLink size={11} />
           </a>
         </div>
       </div>
-
-      {/* Source */}
       <div className="mt-1">
         <span className="text-2xs font-mono text-terminal-dim/60">{item.source}</span>
       </div>
@@ -109,81 +86,83 @@ const NewsCard: React.FC<{ item: PivotNewsItem; isFocused: boolean }> = ({
   );
 };
 
-// ─── Main Screen ──────────────────────────────────────────────
-
 export const NewsIntelligence: React.FC = () => {
   useNewsRefresh();
 
   const { news, positions, focusedTicker, isLoading } = useTerminalStore();
-  const [filterTicker, setFilterTicker] = useState<string>("ALL");
+  const [filterTicker,    setFilterTicker]    = useState<string>("ALL");
   const [filterSentiment, setFilterSentiment] = useState<string>("ALL");
-  const [searchQuery, setSearchQuery]   = useState("");
+  const [searchQuery,     setSearchQuery]     = useState("");
+
+  // ✅ Point 8 : si un ticker est focalisé, on l'applique automatiquement comme filtre
+  // L'utilisateur peut toujours choisir "ALL" pour voir toutes les news
+  const effectiveTicker = focusedTicker && filterTicker === "ALL" ? focusedTicker : filterTicker;
 
   const tickers = ["ALL", ...positions.map((p) => p.ticker)];
 
   const filtered = useMemo(() => {
     let items = [...news];
-    if (filterTicker !== "ALL") {
-      items = items.filter((n) => n.ticker === filterTicker);
+    if (effectiveTicker !== "ALL") {
+      items = items.filter((n) => n.ticker === effectiveTicker);
     }
     if (filterSentiment !== "ALL") {
       items = items.filter((n) => n.sentiment === filterSentiment.toLowerCase());
     }
     if (searchQuery) {
       const q = searchQuery.toLowerCase();
-      items = items.filter(
-        (n) =>
-          n.headline.toLowerCase().includes(q) ||
-          n.summary.toLowerCase().includes(q) ||
-          n.source.toLowerCase().includes(q),
+      items = items.filter((n) =>
+        n.headline.toLowerCase().includes(q) ||
+        n.summary.toLowerCase().includes(q) ||
+        n.source.toLowerCase().includes(q),
       );
     }
     return items;
-  }, [news, filterTicker, filterSentiment, searchQuery]);
+  }, [news, effectiveTicker, filterSentiment, searchQuery]);
 
   return (
     <div className="flex flex-col h-full">
-      {/* ── Header / Filters ── */}
-      <div className="flex items-center gap-4 px-4 py-2.5 border-b border-terminal-border bg-terminal-bg shrink-0">
-        <Filter size={13} className="text-terminal-dim" />
+      {/* ✅ Bandeau Focus Mode actif */}
+      {focusedTicker && filterTicker === "ALL" && (
+        <div className="flex items-center gap-2 px-4 py-1.5 bg-terminal-accent/5 border-b border-terminal-accent/20 text-2xs font-mono shrink-0">
+          <div className="w-1.5 h-1.5 rounded-full bg-terminal-accent animate-pulse" />
+          <span className="text-terminal-accent">Focus Mode actif</span>
+          <span className="text-terminal-dim">— affichage des news pour</span>
+          <span className="text-terminal-text font-bold">{focusedTicker}</span>
+          <button onClick={() => setFilterTicker(focusedTicker)}
+            className="ml-auto text-terminal-dim hover:text-terminal-text underline">
+            Voir tout
+          </button>
+        </div>
+      )}
 
-        {/* Ticker filter */}
+      {/* ── Filters ── */}
+      <div className="flex items-center gap-4 px-4 py-2.5 border-b border-terminal-border bg-terminal-bg shrink-0 flex-wrap">
+        <Filter size={13} className="text-terminal-dim" />
         <div className="flex items-center gap-1">
           {tickers.map((t) => (
-            <button
-              key={t}
-              onClick={() => setFilterTicker(t)}
+            <button key={t} onClick={() => setFilterTicker(t)}
               className={`text-2xs font-mono px-2 py-1 rounded transition-colors ${
                 filterTicker === t
                   ? "bg-terminal-accent/15 text-terminal-accent border border-terminal-accent/40"
                   : "text-terminal-dim hover:text-terminal-text border border-transparent"
-              }`}
-            >
+              }`}>
               {t}
             </button>
           ))}
         </div>
-
         <div className="w-px h-4 bg-terminal-border mx-1" />
-
-        {/* Sentiment filter */}
-        {["ALL", "BULLISH", "BEARISH", "NEUTRAL"].map((s) => (
-          <button
-            key={s}
-            onClick={() => setFilterSentiment(s)}
+        {["ALL","BULLISH","BEARISH","NEUTRAL"].map((s) => (
+          <button key={s} onClick={() => setFilterSentiment(s)}
             className={`text-2xs font-mono px-2 py-1 rounded transition-colors ${
               filterSentiment === s
-                ? s === "BULLISH"  ? "text-up bg-up/10 border border-up/30"
-                : s === "BEARISH"  ? "text-down bg-down/10 border border-down/30"
+                ? s === "BULLISH" ? "text-up bg-up/10 border border-up/30"
+                : s === "BEARISH" ? "text-down bg-down/10 border border-down/30"
                 : "bg-terminal-accent/15 text-terminal-accent border border-terminal-accent/40"
                 : "text-terminal-dim hover:text-terminal-text border border-transparent"
-            }`}
-          >
+            }`}>
             {s}
           </button>
         ))}
-
-        {/* Search */}
         <div className="ml-auto">
           <input
             className="bg-terminal-surface border border-terminal-border rounded px-3 py-1 text-xs font-mono text-terminal-text placeholder-terminal-dim focus:outline-none focus:border-terminal-accent w-48"
@@ -192,13 +171,9 @@ export const NewsIntelligence: React.FC = () => {
             onChange={(e) => setSearchQuery(e.target.value)}
           />
         </div>
-
-        {/* Count */}
         <span className="text-2xs font-mono text-terminal-dim">
           {filtered.length} items
-          {isLoading["news"] && (
-            <span className="ml-2 text-terminal-accent animate-pulse">● LIVE</span>
-          )}
+          {isLoading["news"] && <span className="ml-2 text-terminal-accent animate-pulse">● LIVE</span>}
         </span>
       </div>
 
@@ -211,11 +186,8 @@ export const NewsIntelligence: React.FC = () => {
           </div>
         ) : (
           filtered.map((item) => (
-            <NewsCard
-              key={item.id}
-              item={item}
-              isFocused={!!focusedTicker && item.ticker === focusedTicker}
-            />
+            <NewsCard key={item.id} item={item}
+              isFocused={!!focusedTicker && item.ticker === focusedTicker} />
           ))
         )}
       </div>

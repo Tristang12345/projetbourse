@@ -1,12 +1,14 @@
 //! ============================================================
 //! DATABASE LAYER — SQLite via rusqlite
-//! Manages: positions, news snapshots, market snapshots.
+//! Manages: positions, news snapshots, market snapshots,
+//!          and secure API key storage.
 //! All public functions are called from Tauri commands.
 //! ============================================================
 
 use rusqlite::{Connection, Result, params};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use crate::ApiKeys;
 
 /// Represents a stored portfolio position
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -84,6 +86,22 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
             sentiment    TEXT,
             cached_at    INTEGER NOT NULL
         );
+
+        -- ✅ Stockage sécurisé des clés API utilisateur.
+        -- Une seule ligne (id=1) contient toutes les clés.
+        -- Ce fichier est dans le répertoire AppData local,
+        -- inaccessible depuis le bundle JS distribué.
+        CREATE TABLE IF NOT EXISTS api_keys (
+            id           INTEGER PRIMARY KEY CHECK (id = 1),
+            finnhub      TEXT NOT NULL DEFAULT '',
+            polygon      TEXT NOT NULL DEFAULT '',
+            alphavantage TEXT NOT NULL DEFAULT '',
+            updated_at   INTEGER NOT NULL DEFAULT 0
+        );
+
+        -- Initialise la ligne unique si elle n'existe pas
+        INSERT OR IGNORE INTO api_keys (id, finnhub, polygon, alphavantage, updated_at)
+        VALUES (1, '', '', '', 0);
 
         CREATE INDEX IF NOT EXISTS idx_news_ticker     ON news_cache(ticker);
         CREATE INDEX IF NOT EXISTS idx_news_published  ON news_cache(published_at DESC);
@@ -241,4 +259,33 @@ pub fn prune_old_news(conn: &Connection, days: i64) -> Result<usize> {
         params![cutoff],
     )?;
     Ok(deleted)
+}
+
+// ─── API Keys ─────────────────────────────────────────────────
+
+/// Persist all API keys in the local SQLite DB.
+/// Uses INSERT OR REPLACE on the single row (id=1).
+pub fn save_api_keys(conn: &Connection, keys: &ApiKeys) -> Result<()> {
+    let now = chrono::Utc::now().timestamp_millis();
+    conn.execute(
+        "INSERT OR REPLACE INTO api_keys (id, finnhub, polygon, alphavantage, updated_at)
+         VALUES (1, ?1, ?2, ?3, ?4)",
+        params![keys.finnhub, keys.polygon, keys.alphavantage, now],
+    )?;
+    Ok(())
+}
+
+/// Load stored API keys. Returns empty strings if not yet configured.
+pub fn get_api_keys(conn: &Connection) -> Result<ApiKeys> {
+    let mut stmt = conn.prepare(
+        "SELECT finnhub, polygon, alphavantage FROM api_keys WHERE id = 1"
+    )?;
+    let keys = stmt.query_row([], |row| {
+        Ok(ApiKeys {
+            finnhub:      row.get(0)?,
+            polygon:      row.get(1)?,
+            alphavantage: row.get(2)?,
+        })
+    })?;
+    Ok(keys)
 }

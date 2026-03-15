@@ -1,8 +1,8 @@
 /**
  * ============================================================
  * ZUSTAND TERMINAL STORE
- * Single source of truth for the entire application state.
- * All screens subscribe to slices of this store.
+ * ✅ Point 12 : Store splitté — UI state séparé des données métier
+ * ✅ Point 6  : updatePosition avec champs editables (PRU, quantité, nom)
  * ============================================================
  */
 
@@ -10,75 +10,94 @@ import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
 import type {
   Position, PositionWithPnL, PivotQuote, PivotNewsItem,
-  PivotMacroData, PivotScreenerSignal, PivotEconomicEvent,
-  ApiStatus,
+  PivotMacroData, PivotScreenerSignal, PivotEconomicEvent, ApiStatus,
 } from "../services/types";
-import {
-  calcPnL, calcPnLPercent, calcDayPnL, calcMarketValue,
-} from "../utils/financialCalculations";
+import { calcPnL, calcPnLPercent, calcDayPnL, calcMarketValue } from "../utils/financialCalculations";
 
-// ─── State Shape ──────────────────────────────────────────────
+// ─── UI Store (non persisté) ──────────────────────────────────
+
+interface UIState {
+  activeTab:     number;
+  setActiveTab:  (tab: number) => void;
+  isLoading:     Record<string, boolean>;
+  setLoading:    (key: string, val: boolean) => void;
+  focusedTicker:     string | null;
+  setFocusedTicker:  (ticker: string | null) => void;
+}
+
+export const useUIStore = create<UIState>((set) => ({
+  activeTab:    0,
+  setActiveTab: (tab) => set({ activeTab: tab }),
+  isLoading:    {},
+  setLoading:   (key, val) =>
+    set((s) => ({ isLoading: { ...s.isLoading, [key]: val } })),
+  focusedTicker:    null,
+  setFocusedTicker: (ticker) => set({ focusedTicker: ticker }),
+}));
+
+// ─── Terminal Store (données métier) ──────────────────────────
 
 export interface TerminalState {
-  // ── Active ticker (Global Focus Mode) ──
-  focusedTicker: string | null;
-  setFocusedTicker: (ticker: string | null) => void;
-
-  // ── Portfolio ──
-  positions: Position[];
+  // Portfolio
+  positions:      Position[];
   addPosition:    (pos: Omit<Position, "id" | "addedAt">) => void;
   removePosition: (id: string) => void;
-  updatePosition: (id: string, updates: Partial<Position>) => void;
+  updatePosition: (id: string, updates: Partial<Pick<Position, "name" | "sector" | "quantity" | "avgCost">>) => void;
 
-  // ── Live Quotes (keyed by ticker) ──
-  quotes: Record<string, PivotQuote>;
+  // Quotes
+  quotes:    Record<string, PivotQuote>;
   setQuote:  (ticker: string, quote: PivotQuote) => void;
   setQuotes: (quotes: PivotQuote[]) => void;
 
-  // ── Derived: positions with live P&L ──
+  // Derived
   getPositionsWithPnL: () => PositionWithPnL[];
 
-  // ── News ──
+  // News
   news:    PivotNewsItem[];
   setNews: (news: PivotNewsItem[]) => void;
 
-  // ── Macro ──
+  // Macro
   macroData:    PivotMacroData | null;
   setMacroData: (data: PivotMacroData) => void;
 
-  // ── Screener Signals ──
+  // Screener
   screenerSignals:    PivotScreenerSignal[];
   setScreenerSignals: (signals: PivotScreenerSignal[]) => void;
 
-  // ── Economic Calendar ──
+  // Calendar
   economicEvents:    PivotEconomicEvent[];
   setEconomicEvents: (events: PivotEconomicEvent[]) => void;
 
-  // ── API Status ──
+  // API Status
   apiStatus:    ApiStatus;
   setApiStatus: (status: Partial<ApiStatus>) => void;
 
-  // ── UI State ──
-  activeTab:    number;
-  setActiveTab: (tab: number) => void;
-  isLoading:    Record<string, boolean>;
-  setLoading:   (key: string, val: boolean) => void;
+  // Snapshot
+  lastSnapshot: number | null;
+  saveSnapshot: () => void;
 
-  // ── Snapshot ──
-  lastSnapshot:    number | null;
-  saveSnapshot:    () => void;
+  // Compat: these are kept so existing screens don't break
+  // They delegate to useUIStore
+  activeTab:        number;
+  setActiveTab:     (tab: number) => void;
+  isLoading:        Record<string, boolean>;
+  setLoading:       (key: string, val: boolean) => void;
+  focusedTicker:    string | null;
+  setFocusedTicker: (ticker: string | null) => void;
 }
-
-// ─── Store Implementation ─────────────────────────────────────
 
 export const useTerminalStore = create<TerminalState>()(
   persist(
     (set, get) => ({
-      // ── Focus ──
-      focusedTicker: null,
-      setFocusedTicker: (ticker) => set({ focusedTicker: ticker }),
+      // ── Compat delegates ──
+      get activeTab()        { return useUIStore.getState().activeTab; },
+      get isLoading()        { return useUIStore.getState().isLoading; },
+      get focusedTicker()    { return useUIStore.getState().focusedTicker; },
+      setActiveTab:     (tab) => useUIStore.getState().setActiveTab(tab),
+      setLoading:       (k, v) => useUIStore.getState().setLoading(k, v),
+      setFocusedTicker: (t) => useUIStore.getState().setFocusedTicker(t),
 
-      // ── Portfolio — vide au démarrage, hydraté depuis localStorage / SQLite ──
+      // ── Portfolio ──
       positions: [],
 
       addPosition: (pos) =>
@@ -92,6 +111,10 @@ export const useTerminalStore = create<TerminalState>()(
       removePosition: (id) =>
         set((s) => ({ positions: s.positions.filter((p) => p.id !== id) })),
 
+      /**
+       * ✅ Point 6 — Édition de position (PRU, quantité, nom, secteur).
+       * Le champ `id` et `ticker` ne peuvent pas être modifiés.
+       */
       updatePosition: (id, updates) =>
         set((s) => ({
           positions: s.positions.map((p) =>
@@ -116,29 +139,25 @@ export const useTerminalStore = create<TerminalState>()(
       getPositionsWithPnL: () => {
         const { positions, quotes } = get();
         return positions.map((pos) => {
-          const q       = quotes[pos.ticker];
-          const price   = q?.price     ?? pos.avgCost;
-          const prev    = q?.prevClose ?? pos.avgCost;
-          const pnl     = calcPnL(price, pos.avgCost, pos.quantity);
-          const pnlPct  = calcPnLPercent(price, pos.avgCost);
-          const dayPnL  = calcDayPnL(price, prev, pos.quantity);
-          const dayPct  = prev > 0 ? ((price - prev) / prev) * 100 : 0;
-          const mktVal  = calcMarketValue(price, pos.quantity);
-
+          const q      = quotes[pos.ticker];
+          const price  = q?.price     ?? pos.avgCost;
+          const prev   = q?.prevClose ?? pos.avgCost;
+          const pnl    = calcPnL(price, pos.avgCost, pos.quantity);
+          const pnlPct = calcPnLPercent(price, pos.avgCost);
+          const dayPnL = calcDayPnL(price, prev, pos.quantity);
+          const dayPct = prev > 0 ? ((price - prev) / prev) * 100 : 0;
           return {
             ...pos,
             currentPrice:  price,
             change:        q?.change        ?? 0,
             changePercent: q?.changePercent ?? 0,
-            marketValue:   mktVal,
-            pnl,
-            pnlPercent:    pnlPct,
-            dayPnL,
-            dayPnLPercent: dayPct,
-            sparkline:     [],              // populated by Portfolio screen
-            currency:      q?.currency      ?? "USD",
-            open:          q?.open          ?? price,
-            prevClose:     q?.prevClose     ?? price,
+            marketValue:   calcMarketValue(price, pos.quantity),
+            pnl, pnlPercent: pnlPct,
+            dayPnL, dayPnLPercent: dayPct,
+            sparkline:  [],
+            currency:   q?.currency  ?? "USD",
+            open:       q?.open      ?? price,
+            prevClose:  q?.prevClose ?? price,
           };
         });
       },
@@ -160,23 +179,9 @@ export const useTerminalStore = create<TerminalState>()(
       setEconomicEvents: (events) => set({ economicEvents: events }),
 
       // ── API Status ──
-      apiStatus: {
-        finnhub:      "idle",
-        polygon:      "idle",
-        alphavantage: "idle",
-        lastUpdated:  0,
-      },
+      apiStatus: { finnhub: "idle", polygon: "idle", alphavantage: "idle", lastUpdated: 0 },
       setApiStatus: (status) =>
-        set((s) => ({
-          apiStatus: { ...s.apiStatus, ...status, lastUpdated: Date.now() },
-        })),
-
-      // ── UI ──
-      activeTab: 0,
-      setActiveTab: (tab) => set({ activeTab: tab }),
-      isLoading: {},
-      setLoading: (key, val) =>
-        set((s) => ({ isLoading: { ...s.isLoading, [key]: val } })),
+        set((s) => ({ apiStatus: { ...s.apiStatus, ...status, lastUpdated: Date.now() } })),
 
       // ── Snapshot ──
       lastSnapshot: null,
@@ -184,22 +189,16 @@ export const useTerminalStore = create<TerminalState>()(
     }),
     {
       name:    "bloomberg-terminal-state",
-      version: 3,  // bump when Position shape changes to trigger migration
+      version: 4,
       storage: createJSONStorage(() => localStorage),
-      // Only persist positions & settings; not live data
       partialize: (s) => ({
-        positions:     s.positions,
-        activeTab:     s.activeTab,
-        lastSnapshot:  s.lastSnapshot,
-        focusedTicker: s.focusedTicker,
+        positions:    s.positions,
+        lastSnapshot: s.lastSnapshot,
       }),
-      // Migration: si le format stocké est d'une version antérieure,
-      // on conserve les positions (champs de base) et on purge le reste
       migrate: (persisted: any, version: number) => {
-        if (version < 3) {
+        if (version < 4) {
           return {
             ...persisted,
-            // Garantit que les positions ont bien les champs obligatoires
             positions: (persisted.positions ?? []).map((p: any) => ({
               id:       p.id       ?? crypto.randomUUID(),
               ticker:   p.ticker   ?? "",
@@ -212,36 +211,6 @@ export const useTerminalStore = create<TerminalState>()(
           };
         }
         return persisted;
-      },
-      onRehydrateStorage: () => (state, error) => {
-        if (error) {
-          console.error("[Store] Échec de rehydratation localStorage:", error);
-          return;
-        }
-        // Zustand v4 : on ne peut pas muter state directement ici.
-        // On utilise setState via un microtask après la fin de l'hydratation.
-        // Premier lancement ou data loss → pré-remplir avec BNP.PA
-        if (state && state.positions.length === 0) {
-          Promise.resolve().then(() => {
-            // Vérifie à nouveau (double-check) pour éviter les races
-            const current = useTerminalStore.getState();
-            if (current.positions.length === 0) {
-              useTerminalStore.setState({
-                positions: [
-                  {
-                    id:       "bnp-default-1",
-                    ticker:   "BNP.PA",
-                    name:     "BNP Paribas",
-                    sector:   "Finance",
-                    quantity: 50,
-                    avgCost:  95.21,
-                    addedAt:  Date.now(),
-                  },
-                ],
-              });
-            }
-          });
-        }
       },
     },
   ),
